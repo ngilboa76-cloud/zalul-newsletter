@@ -51,6 +51,13 @@
   .checks ul{margin:0;padding:0 18px 0 0}
   .checks li{margin:3px 0}
   .ok{color:var(--ok)}.warn{color:var(--warn)}.err{color:var(--err)}
+  .up{display:flex;gap:12px;align-items:center;border:1.5px dashed #C9D9E3;border-radius:8px;padding:10px;background:#fff}
+  .up.drag{border-color:var(--blue);background:#EAF3FA}
+  .up .thumb{width:96px;height:54px;object-fit:cover;border-radius:5px;background:var(--bg);display:none}
+  .up .thumb.on{display:block}
+  .up-body{display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+  .up-btn{padding:7px 14px;font-size:14px}
+  .up-msg.err{color:var(--err)}
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:8px;font-weight:700;opacity:0;transition:opacity .2s;pointer-events:none}
   .toast.show{opacity:1}
 </style>
@@ -154,8 +161,16 @@
     <textarea data-k="text" style="min-height:70px"></textarea>
     <label>קישור</label>
     <input data-k="url" dir="ltr" placeholder="https://">
-    <label>קישור לתמונה <span class="hint">– רוחב 1040 פיקסלים, אופציונלי</span></label>
-    <input data-k="img" dir="ltr" placeholder="https://">
+    <label>תמונה <span class="hint">– אופציונלי</span></label>
+    <div class="up">
+      <img class="thumb" alt="">
+      <div class="up-body">
+        <button type="button" class="ghost up-btn">העלאת תמונה</button>
+        <span class="up-msg hint">או גוררים תמונה לכאן</span>
+        <input type="file" accept="image/*" class="up-file" hidden>
+      </div>
+    </div>
+    <input data-k="img" dir="ltr" placeholder="או הדבקת קישור לתמונה https://" style="margin-top:8px">
     <label>תיאור התמונה <span class="hint">– לנגישות ולמי שהתמונות חסומות אצלו</span></label>
     <input data-k="alt">
     <label class="cta-l">טקסט הכפתור</label>
@@ -171,6 +186,9 @@
   var FIXED = ['logo','unsub','webview','address','donate','volunteer'];
   var KEY_DRAFT = 'zalul-nl-draft-v1', KEY_FIXED = 'zalul-nl-fixed-v1';
   var MAX_ITEMS = 4;
+  /* Cloudinary – unsigned upload. ממלאים פעם אחת. */
+  var CLOUDINARY = { cloudName: '', uploadPreset: '' };
+  var IMG_WIDTH = 1040, IMG_QUALITY = 0.82;
 
   function store(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
   function load(k){ try{ var s = localStorage.getItem(k); return s ? JSON.parse(s) : null; }catch(e){ return null; } }
@@ -191,7 +209,55 @@
     data = data || {};
     node.querySelectorAll('[data-k]').forEach(function(el){ el.value = data[el.dataset.k] || ''; });
     node.querySelector('.rm').addEventListener('click', function(){ node.remove(); relabel(); update(); });
+    wireUpload(node);
     itemsBox.appendChild(node); relabel();
+  }
+
+  /* ---------- image upload ---------- */
+  function resize(file){
+    return new Promise(function(res, rej){
+      var url = URL.createObjectURL(file), im = new Image();
+      im.onload = function(){
+        var w = Math.min(IMG_WIDTH, im.naturalWidth), h = Math.round(im.naturalHeight * w / im.naturalWidth);
+        var c = document.createElement('canvas'); c.width = w; c.height = h;
+        var x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.drawImage(im, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        c.toBlob(function(b){ b ? res(b) : rej(new Error('resize')); }, 'image/jpeg', IMG_QUALITY);
+      };
+      im.onerror = function(){ URL.revokeObjectURL(url); rej(new Error('read')); };
+      im.src = url;
+    });
+  }
+  function upload(blob){
+    var fd = new FormData();
+    fd.append('file', blob, 'newsletter.jpg');
+    fd.append('upload_preset', CLOUDINARY.uploadPreset);
+    return fetch('https://api.cloudinary.com/v1_1/' + encodeURIComponent(CLOUDINARY.cloudName) + '/image/upload', { method:'POST', body:fd })
+      .then(function(r){ return r.json().then(function(j){ if (!r.ok || !j.secure_url) throw new Error((j.error && j.error.message) || 'upload'); return j.secure_url; }); });
+  }
+  function wireUpload(node){
+    var box = node.querySelector('.up'), btn = node.querySelector('.up-btn'), file = node.querySelector('.up-file'),
+        msg = node.querySelector('.up-msg'), thumb = node.querySelector('.thumb'), field = node.querySelector('[data-k="img"]');
+    function say(t, bad){ msg.textContent = t; msg.classList.toggle('err', !!bad); }
+    function showThumb(){ var v = field.value.trim(); thumb.classList.toggle('on', /^https?:\/\//.test(v)); if (/^https?:\/\//.test(v)) thumb.src = v; }
+    field.addEventListener('input', showThumb); showThumb();
+    function handle(f){
+      if (!f) return;
+      if (!/^image\//.test(f.type)) { say('הקובץ אינו תמונה', true); return; }
+      if (!CLOUDINARY.cloudName || !CLOUDINARY.uploadPreset) { say('העלאה עוד לא חוברה – אפשר להדביק קישור', true); return; }
+      btn.disabled = true; say('מקטין ומעלה…');
+      resize(f).then(upload).then(function(u){
+        field.value = u; showThumb(); say('התמונה הועלתה');
+        var alt = node.querySelector('[data-k="alt"]'); if (!alt.value.trim()) alt.focus();
+        update();
+      }).catch(function(){ say('ההעלאה נכשלה – נסו שוב או הדביקו קישור', true); })
+        .then(function(){ btn.disabled = false; file.value = ''; });
+    }
+    btn.addEventListener('click', function(){ file.click(); });
+    file.addEventListener('change', function(){ handle(file.files[0]); });
+    ['dragenter','dragover'].forEach(function(t){ box.addEventListener(t, function(e){ e.preventDefault(); box.classList.add('drag'); }); });
+    ['dragleave','drop'].forEach(function(t){ box.addEventListener(t, function(e){ e.preventDefault(); box.classList.remove('drag'); }); });
+    box.addEventListener('drop', function(e){ handle(e.dataTransfer.files[0]); });
   }
   function relabel(){
     Array.prototype.forEach.call(itemsBox.children, function(n, i){
