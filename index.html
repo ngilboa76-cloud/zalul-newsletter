@@ -58,6 +58,15 @@
   .up-body{display:flex;flex-direction:column;gap:4px;align-items:flex-start}
   .up-btn{padding:7px 14px;font-size:14px}
   .up-msg.err{color:var(--err)}
+  .sharebox{display:none;background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+  .sharebox.on{display:block}
+  .sharebox input{margin-top:6px;font-size:12px}
+  body.review form,body.review .bar,body.review .checks,body.review .sharebox{display:none !important}
+  body.review header p{display:none}
+  body.review .layout{grid-template-columns:1fr;max-width:820px;margin:0 auto}
+  .review-head{display:none;background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 18px;font-size:15px;line-height:1.6}
+  body.review .review-head{display:block}
+  .review-head .meta{color:var(--muted);font-size:13px}
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:8px;font-weight:700;opacity:0;transition:opacity .2s;pointer-events:none}
   .toast.show{opacity:1}
 </style>
@@ -140,8 +149,22 @@
   <div class="bar">
     <button type="button" class="primary" id="copy">העתקת קוד HTML</button>
     <button type="button" class="ghost" id="download">הורדת קובץ</button>
+    <button type="button" class="ghost" id="share">קישור לאישור</button>
     <span class="sp"></span>
     <span class="seg"><button type="button" class="on" data-w="desktop">מחשב</button><button type="button" data-w="mobile">נייד</button></span>
+  </div>
+  <div class="sharebox" id="sharebox">
+    קישור לאישור – שולחים למאשר/ת. נפתחת תצוגה בלבד, בלי עריכה. אחרי כל שינוי בטופס יוצרים קישור חדש.
+    <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
+      <input id="shareUrl" dir="ltr" readonly style="margin-top:0">
+      <button type="button" class="primary" id="copyLink" style="white-space:nowrap">העתקת קישור</button>
+    </div>
+  </div>
+  <div class="review-head" id="reviewHead">
+    <strong>תצוגה מקדימה לאישור – ניוזלטר צלול</strong><br>
+    <span class="meta">שורת נושא:</span> <span id="rvSubject"></span><br>
+    <span class="meta">טקסט מקדים:</span> <span id="rvPre"></span>
+    <div style="margin-top:10px"><span class="seg"><button type="button" class="on" data-w="desktop">מחשב</button><button type="button" data-w="mobile">נייד</button></span></div>
   </div>
   <div class="checks" id="checks"></div>
   <div class="frame"><iframe id="pv" title="תצוגה מקדימה"></iframe></div>
@@ -451,7 +474,56 @@
     try { var h = $('pv').contentDocument.documentElement.scrollHeight; if (h) $('pv').style.height = (h + 20) + 'px'; } catch(e) {}
   });
 
+  /* ---------- approval link ---------- */
+  function b64url(bytes){ var s = ''; for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]); return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+  function unb64url(s){ s = s.replace(/-/g,'+').replace(/_/g,'/'); while (s.length % 4) s += '='; var b = atob(s), a = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
+  function pack(obj){
+    var bytes = new TextEncoder().encode(JSON.stringify(obj));
+    var cs = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+    return new Response(cs).arrayBuffer().then(function(buf){ return b64url(new Uint8Array(buf)); });
+  }
+  function unpack(str){
+    var ds = new Blob([unb64url(str)]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Response(ds).text().then(JSON.parse);
+  }
+  $('share').addEventListener('click', function(){
+    if (!window.CompressionStream) { toast('הדפדפן לא תומך – עדכנו את הדפדפן'); return; }
+    pack(data()).then(function(code){
+      var url = location.origin + location.pathname + '#review=' + code;
+      $('shareUrl').value = url; $('sharebox').classList.add('on');
+      copyText(url, 'קישור האישור נוצר והועתק');
+    });
+  });
+
+  function copyText(t, okMsg){
+    var done = function(){ toast(okMsg); };
+    function fallback(){
+      var ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch(e) { toast('ההעתקה נכשלה – סמנו והעתיקו ידנית'); }
+      ta.remove();
+    }
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done, fallback); else fallback();
+  }
+  $('copyLink').addEventListener('click', function(){ copyText($('shareUrl').value, 'הקישור הועתק'); });
+
+  function startReview(code){
+    document.body.classList.add('review');
+    document.title = 'לאישור – ניוזלטר צלול';
+    unpack(code).then(function(d){
+      FIELDS.concat(FIXED).forEach(function(k){ if (d[k] == null) d[k] = ''; });
+      d.items = d.items || [];
+      $('rvSubject').textContent = d.subject || '—';
+      $('rvPre').textContent = d.preheader || '—';
+      $('pv').srcdoc = build(d);
+    }).catch(function(){
+      $('reviewHead').innerHTML = '<strong>הקישור לא תקין או נקטע.</strong> בקשו קישור חדש.';
+    });
+  }
+
   /* ---------- init ---------- */
+  var rv = /[#&]review=([A-Za-z0-9_-]+)/.exec(location.hash);
+  if (rv) { startReview(rv[1]); return; }
   var fx = load(KEY_FIXED); if (fx) FIXED.forEach(function(k){ if (fx[k] != null) $(k).value = fx[k]; });
   if (!fx || !fx.unsub) $('fixedBox').open = true;
   var dr = load(KEY_DRAFT);
